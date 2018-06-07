@@ -9,9 +9,10 @@ Using Cycle-Consistent Adversarial Networks](http://www.kecl.ntt.co.jp/people/ka
 
 ## TODO
 - [x] Generator
-- [] Discriminator
-- [] CycleGAN
+- [ ] Discriminator
+- [ ] CycleGAN
 
 ## Reference
 [Gated CNN](https://github.com/jojonki/Gated-Convolutional-Networks)
+
 [Tensorflow CycleGAN-VC](https://github.com/leimao/Voice_Converter_CycleGAN)
