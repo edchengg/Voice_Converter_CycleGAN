@@ -9,8 +9,10 @@ Using Cycle-Consistent Adversarial Networks](http://www.kecl.ntt.co.jp/people/ka
 
 ## TODO
 - [x] Generator
-- [ ] Discriminator
-- [ ] CycleGAN
+- [x] Discriminator
+- [x] CycleGAN
+- [ ] train
+- [ ] data processing
 
 ## Reference
 [Gated CNN](https://github.com/jojonki/Gated-Convolutional-Networks)
