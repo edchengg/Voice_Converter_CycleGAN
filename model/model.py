@@ -18,6 +18,7 @@ def padding_half(input_size, kernel, stride):
         return p2
 
 
+
 class GatedCNN1d(nn.Module):
     def __init__(self,
                  in_chs,
@@ -133,6 +134,57 @@ class Generator(nn.Module):
         H = self.output_layer(H)
         return H
 
+
+
+
+class Downsample2d(nn.Module):
+    def __init__(self,
+                 in_chs,
+                 out_chs,
+                 kernel,
+                 stride,
+                 padding):
+        super(Downsample2d, self).__init__()
+
+        self.conv_0 = nn.Conv2d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
+        self.conv_gate_0 = nn.Conv2d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
+
+        self.ins_norm = nn.InstanceNorm2d(out_chs)
+
+    def forward(self, x):
+        A = self.conv_0(x)
+        B = self.conv_gate_0(x)
+        A = self.ins_norm(A)
+        B = self.ins_norm(B)
+        H = A * F.sigmoid(B)
+        return H
+
+
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+
+        self.input_layer = nn.Conv2d(1, 128, kernel_size=(3, 3), stride=(1, 2), padding=(1, 1))
+        self.input_layer_gates = nn.Conv2d(1, 128, kernel_size=(3, 3), stride=(1, 2), padding=(1, 1))
+
+        self.down_sample_1 = Downsample2d(128, 256, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
+        self.down_sample_2 = Downsample2d(256, 512, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
+        self.down_sample_3 = Downsample2d(512, 1024, kernel=(6, 3), stride=(1, 2), padding=(0, 1))
+
+        self.fc = nn.Linear(1024 * 1 * 8, 2)
+
+    def forward(self, x):
+        batch = x.size(0)
+        A = self.input_layer(x)
+        B = self.input_layer_gates(x)
+        H = A * F.sigmoid(B)
+        H = self.down_sample_1(H)
+        H = self.down_sample_2(H)
+        H = self.down_sample_3(H)
+        H = H.view(batch, -1)
+        out = self.fc(H)
+        out = F.sigmoid(out)
+        return out
 
 
 
