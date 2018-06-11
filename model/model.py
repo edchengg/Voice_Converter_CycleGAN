@@ -192,30 +192,33 @@ class CycleGAN(nn.Module):
     def __init__(self):
         super(CycleGAN, self).__init__()
 
-        self.generator_x2y = Generator()
-        self.generator_y2x = Generator()
+        self.G_x2y = Generator()
+        self.G_y2x = Generator()
 
-        self.discriminator_x = Discriminator()
-        self.discriminator_y = Discriminator()
+        self.D_x = Discriminator()
+        self.D_y = Discriminator()
 
     def forward(self, x, y):
-        x2y = self.generator_x2y(x)
-        y2x = self.generator_y2x(y)
+        fake_y = self.G_x2y(x)
+        fake_x = self.G_y2x(y)
 
-        y2x2y = self.generator_x2y(y2x)
-        x2y2x = self.generator_y2x(x2y)
+        cycle_y = self.G_x2y(fake_x)
+        cycle_x = self.G_y2x(fake_y)
 
-        dis_fake_y = self.discriminator_y(x2y)
-        dis_fake_x = self.discriminator_x(y2x)
+        y_id = self.G_x2y(y)
+        x_id = self.G_y2x(x)
 
-        dis_real_y = self.discriminator_y(y)
-        dis_real_x = self.discriminator_x(x)
+        d_fake_x = self.G_x(fake_x)
+        d_fake_y = self.G_x(fake_y)
 
-        y_ident = self.generator_x2y(y)
-        x_ident = self.generator_y2x(x)
+        d_real_x = self.G_x(x)
+        d_real_y = self.G_y(y)
 
-        return x2y, y2x, y2x2y, x2y2x, dis_fake_y, dis_fake_x, dis_real_y, dis_real_x, \
-               y_ident, x_ident
+        return fake_x,fake_y, cycle_x, cycle_y, x_id, y_id, d_fake_x, d_fake_y, d_real_x, d_real_y
+
+
+
+
 
 
 
