@@ -15,6 +15,7 @@ Using Cycle-Consistent Adversarial Networks](http://www.kecl.ntt.co.jp/people/ka
 - [ ] data processing
 - [ ] main
 - [ ] utils
+- [ ] GCNN bias
 
 ## Reference
 [Gated CNN](https://github.com/jojonki/Gated-Convolutional-Networks)
