@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from itertools import chain
 
 def padding_same(input_size, kernel, stride):
     p = stride * (input_size - 1) - input_size + kernel
@@ -31,9 +31,9 @@ class GatedCNN1d(nn.Module):
         super(GatedCNN1d, self).__init__()
 
         self.conv_0 = nn.Conv1d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
-        # self.b_0 = nn.Parameter(torch.randn(1, out_chs, 1))
+        self.b_0 = nn.Parameter(torch.randn(1, out_chs, 1))
         self.conv_gate_0 = nn.Conv1d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
-        # self.c_0 = nn.Parameter(torch.randn(1, out_chs, 1))
+        self.c_0 = nn.Parameter(torch.randn(1, out_chs, 1))
 
         # Use instance normalization indicator
         self.ins_norm = ins_norm
@@ -44,19 +44,21 @@ class GatedCNN1d(nn.Module):
     def forward(self, x):
         # x: (batch_size, Cin, W)
 
-        Win = x.size(2)
         A = self.conv_0(x)
-        # A += self.b_0.repeat(1, 1, Win)
+        Wout = A.size(2)
+        A += self.b_0.repeat(1, 1, Wout)
         B = self.conv_gate_0(x)
-        # B += self.c_0.repeat(1, 1, Win)
+        B += self.c_0.repeat(1, 1, Wout)
+
         if self.shuffle:
             A = self.pixel_shuffle(A)
             B = self.pixel_shuffle(B)
+
         if self.ins_norm:
             A = self.conv1d_norm(A)
             B = self.conv1d_norm(B)
-        h = A * F.sigmoid(B)
 
+        h = A * F.sigmoid(B)
         return h
 
     def pixel_shuffle(self, x, shuffle_size=2):
@@ -147,13 +149,17 @@ class Downsample2d(nn.Module):
         super(Downsample2d, self).__init__()
 
         self.conv_0 = nn.Conv2d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
+        self.b_0 = nn.Parameter(torch.randn(1, out_chs, 1, 1))
         self.conv_gate_0 = nn.Conv2d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
-
+        self.c_0 = nn.Parameter(torch.randn(1, out_chs, 1, 1))
         self.ins_norm = nn.InstanceNorm2d(out_chs)
 
     def forward(self, x):
         A = self.conv_0(x)
+        Hout, Wout = A.size(2), A.size(3)
+        A += self.b_0.repeat(1, 1, Hout, Wout)
         B = self.conv_gate_0(x)
+        B += self.c_0.repeat(1, 1, Hout, Wout)
         A = self.ins_norm(A)
         B = self.ins_norm(B)
         H = A * F.sigmoid(B)
@@ -198,6 +204,9 @@ class CycleGAN(nn.Module):
         self.D_x = Discriminator()
         self.D_y = Discriminator()
 
+        self.G_params = chain(self.G_x2y.parameters(), self.G_y2x.parameters())
+        self.D_params = chain(self.D_x.parameters(), self.D_y.parameters())
+
     def forward(self, x, y):
         fake_y = self.G_x2y(x)
         fake_x = self.G_y2x(y)
@@ -208,14 +217,26 @@ class CycleGAN(nn.Module):
         y_id = self.G_x2y(y)
         x_id = self.G_y2x(x)
 
-        d_fake_x = self.G_x(fake_x)
-        d_fake_y = self.G_x(fake_y)
+        # trans x y to 2d
+        fake_x = fake_x.unsqueeze(1)
+        fake_y = fake_y.unsqueeze(1)
+        x = x.unsqueeze(1)
+        y = y.unsqueeze(1)
+        d_fake_x = self.D_x(fake_x)
+        d_fake_y = self.D_x(fake_y)
 
-        d_real_x = self.G_x(x)
-        d_real_y = self.G_y(y)
+        d_real_x = self.D_x(x)
+        d_real_y = self.D_y(y)
 
         return fake_x,fake_y, cycle_x, cycle_y, x_id, y_id, d_fake_x, d_fake_y, d_real_x, d_real_y
 
+    def train_D(self):
+        for p in self.D_params:
+            p.requires_grad = True
+
+    def train_G(self):
+        for p in self.D_params:
+            p.requires_grad = False
 
 
 
