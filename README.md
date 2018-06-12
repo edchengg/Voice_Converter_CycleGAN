@@ -11,11 +11,12 @@ Using Cycle-Consistent Adversarial Networks](http://www.kecl.ntt.co.jp/people/ka
 - [x] Generator
 - [x] Discriminator
 - [x] CycleGAN
-- [ ] train
-- [ ] data processing
-- [ ] main
-- [ ] utils
-- [ ] GCNN bias
+- [x] train
+- [x] data processing
+- [x] main
+- [x] utils
+- [x] GCNN bias
+- [ ] Evaluation audio processing
 
 ## Reference
 [Gated CNN](https://github.com/jojonki/Gated-Convolutional-Networks)
