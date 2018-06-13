@@ -167,7 +167,7 @@ class Downsample2d(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, lsgan=False):
         super(Discriminator, self).__init__()
 
         self.input_layer = nn.Conv2d(1, 128, kernel_size=(3, 3), stride=(1, 2), padding=(1, 1))
@@ -178,7 +178,7 @@ class Discriminator(nn.Module):
         self.down_sample_3 = Downsample2d(512, 1024, kernel=(6, 3), stride=(1, 2), padding=(0, 1))
 
         self.fc = nn.Linear(1024 * 1 * 8, 2)
-
+        self.lsgan = lsgan
     def forward(self, x):
         batch = x.size(0)
         A = self.input_layer(x)
@@ -189,20 +189,21 @@ class Discriminator(nn.Module):
         H = self.down_sample_3(H)
         H = H.view(batch, -1)
         out = self.fc(H)
-        out = F.sigmoid(out)
+        if not self.lsgan: # If use LSGAN, no sigmoid to avoid vanishing gradient
+            out = F.sigmoid(out)
         return out
 
 
 
 class CycleGAN(nn.Module):
-    def __init__(self):
+    def __init__(self, lsgan=False):
         super(CycleGAN, self).__init__()
 
         self.G_x2y = Generator()
         self.G_y2x = Generator()
 
-        self.D_x = Discriminator()
-        self.D_y = Discriminator()
+        self.D_x = Discriminator(lsgan=lsgan)
+        self.D_y = Discriminator(lsgan=lsgan)
 
         self.G_params = chain(self.G_x2y.parameters(), self.G_y2x.parameters())
         self.D_params = chain(self.D_x.parameters(), self.D_y.parameters())

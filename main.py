@@ -1,5 +1,6 @@
 import os
 import pickle
+import argparse
 import torch
 import torch.nn
 import torch.utils.data
@@ -9,9 +10,17 @@ from model.model import *
 from preprocess import *
 from utils import *
 
+parser = argparse.ArgumentParser(description='Voice Conversion')
+parser.add_argument('--ID', type=int, default=1,
+                    help='Model ID')
+parser.add_argument('--lsgan', type=int, default=0,
+                    help='if 0 use lsgan, elif 1 use gan')
+args = parser.parse_args()
 
+ID = args.ID
+LSGAN = True if args.lsgan == 0 else False
 CUDA = torch.cuda.is_available()
-EPOCHS = 1
+EPOCHS = 5000
 BATCH_SIZE = 1
 model_dir = './model/sf1_tf2'
 n_frames = 128
@@ -35,7 +44,7 @@ with open(os.path.join(model_dir, 'coded_sps_B_norm.pkl'), 'rb') as input2:
     data_B = pickle.load(input2)
 
 
-model = CycleGAN()
+model = CycleGAN(lsgan=LSGAN) # If use LSGAN, no sigmoid for Discriminator
 if CUDA:
     model.cuda()
 
@@ -50,6 +59,13 @@ optimizer_G = torch.optim.Adam(model.G_params, lr=LR_G, betas=(0.5, 0.999))
 optimizer_D = torch.optim.Adam(model.D_params, lr=LR_D, betas=(0.5, 0.999))
 
 num_iterations = 0
+
+def _loss(input, target, LSGAN):
+    if LSGAN: # LSGAN use L2 loss and remove sigmoid from Discriminator network
+        return F.mse_loss(input=input, target=target)
+    else:
+        return F.binary_cross_entropy(input=input, target=target)
+
 
 for i in range(EPOCHS):
 
@@ -94,12 +110,16 @@ for i in range(EPOCHS):
         real_label = torch.ones(d_fake_x.size())
         fake_label = torch.zeros(d_fake_x.size())
 
+        if CUDA:
+            real_label = real_label.cuda()
+            fake_label = fake_label.cuda()
+
         # ============ Train Generators ============ #
         model.train_G()
         # GAN LOSS
 
-        loss_G_x2y = F.binary_cross_entropy(input=d_fake_y, target=real_label)
-        loss_G_y2x = F.binary_cross_entropy(input=d_fake_x, target=real_label)
+        loss_G_x2y = _loss(input=d_fake_y, target=real_label, LSGAN=LSGAN)
+        loss_G_y2x = _loss(input=d_fake_x, target=real_label, LSGAN=LSGAN)
         loss_gan = loss_G_x2y + loss_G_y2x
 
         # Cycle LOSS
@@ -123,10 +143,10 @@ for i in range(EPOCHS):
         # ============ Train Discriminators ============ #
         model.train_D()
 
-        loss_D_fake_x = F.binary_cross_entropy(input=d_fake_x, target=fake_label)
-        loss_D_fake_y = F.binary_cross_entropy(input=d_fake_y, target=fake_label)
-        loss_D_real_x = F.binary_cross_entropy(input=d_real_x, target=real_label)
-        loss_D_real_y = F.binary_cross_entropy(input=d_real_y, target=real_label)
+        loss_D_fake_x = _loss(input=d_fake_x, target=fake_label, LSGAN=LSGAN)
+        loss_D_fake_y = _loss(input=d_fake_y, target=fake_label, LSGAN=LSGAN)
+        loss_D_real_x = _loss(input=d_real_x, target=real_label, LSGAN=LSGAN)
+        loss_D_real_y = _loss(input=d_real_y, target=real_label, LSGAN=LSGAN)
 
         # Total Discriminator Loss
         loss_dis = loss_D_fake_x + loss_D_fake_y + loss_D_real_x + loss_D_real_y
@@ -134,12 +154,16 @@ for i in range(EPOCHS):
         optimizer_D.step()
 
         # Tensorboard
-        writer.add_scalar('data/loss_G_x2y', loss_G_x2y.item(), num_iterations)
-        writer.add_scalar('data/loss_G_y2x', loss_G_y2x.item(), num_iterations)
-        writer.add_scalar('data/loss_identity', loss_identity.item(), num_iterations)
-        writer.add_scalar('data/loss_cycle', loss_cycle.item(), num_iterations)
-        writer.add_scalar('data/loss_D_x', loss_D_fake_x.item() + loss_D_real_x.item(), num_iterations)
-        writer.add_scalar('data/loss_D_y', loss_D_fake_y.item() + loss_D_real_y.item(), num_iterations)
+        if num_iterations % 10 == 0:
+            writer.add_scalars('data/loss', {'Generator x2y': loss_G_x2y.item(),
+                                             'Generator y2x': loss_G_y2x.item(),
+                                             'Discriminator x': loss_D_real_x.item() + loss_D_fake_x.item(),
+                                             'Discrimiantor y': loss_D_real_y.item() + loss_D_fake_y.item()},
+                               num_iterations)
+            writer.add_scalars('data/loss_identity', {'identity loss': loss_identity.item(),
+                                                      'cycle loss': loss_cycle.item()},
+                               num_iterations)
+
 
         if num_iterations % 50 == 0:
             print('Iteration: {:07d}, Generator Learning Rate: {:.7f}, Discriminator Learning Rate: {:.7f}, '
@@ -148,13 +172,13 @@ for i in range(EPOCHS):
                     loss_dis.item()))
 
         if num_iterations % 1000 == 0:
-            torch.save(model.state_dict(), os.path.join(model_dir, 'model_sf1_tf1.pt'))
+            torch.save(model.state_dict(), os.path.join(model_dir, 'model_sf1_tf1_' + str(ID) + '.pt'))
 
 
 
 
 # export scalar data to JSON for external processing
-writer.export_scalars_to_json("./all_scalars.json")
+writer.export_scalars_to_json("./all_scalars_" + str(ID) + ".json")
 writer.close()
 
-torch.save(model.state_dict(), os.path.join(model_dir, 'model_sf1_tf1.pt'))
+torch.save(model.state_dict(), os.path.join(model_dir, 'model_sf1_tf1_' + str(ID) + '.pt'))
