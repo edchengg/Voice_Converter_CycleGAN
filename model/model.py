@@ -1,7 +1,12 @@
+import os
 import torch
+import librosa
 import torch.nn as nn
 import torch.nn.functional as F
 from itertools import chain
+from utils import *
+from preprocess import *
+import numpy as np
 
 def padding_same(input_size, kernel, stride):
     p = stride * (input_size - 1) - input_size + kernel
@@ -38,7 +43,7 @@ class GatedCNN1d(nn.Module):
         # Use instance normalization indicator
         self.ins_norm = ins_norm
         if ins_norm:
-            self.conv1d_norm = nn.InstanceNorm1d(out_chs)
+            self.conv1d_norm = nn.InstanceNorm1d(out_chs, eps=1e-6, affine=True)
         self.shuffle = shuffle
 
     def forward(self, x):
@@ -87,7 +92,7 @@ class ResidualBlock(nn.Module):
 
         self.GLU = GatedCNN1d(in_chs, out_chs, kernel1, stride1, padding, ins_norm)
         self.conv1d = nn.Conv1d(out_chs, out_chs2, kernel2, stride2, padding)
-        self.conv1d_norm = nn.InstanceNorm1d(out_chs2)
+        self.conv1d_norm = nn.InstanceNorm1d(out_chs2, eps=1e-6, affine=True)
 
     def forward(self, x):
         out = self.GLU(x)
@@ -152,7 +157,7 @@ class Downsample2d(nn.Module):
         self.b_0 = nn.Parameter(torch.randn(1, out_chs, 1, 1))
         self.conv_gate_0 = nn.Conv2d(in_chs, out_chs, kernel_size=kernel, stride=stride, padding=padding)
         self.c_0 = nn.Parameter(torch.randn(1, out_chs, 1, 1))
-        self.ins_norm = nn.InstanceNorm2d(out_chs)
+        self.ins_norm = nn.InstanceNorm2d(out_chs, eps=1e-6, affine=True)
 
     def forward(self, x):
         A = self.conv_0(x)
@@ -167,7 +172,7 @@ class Downsample2d(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, lsgan=False):
+    def __init__(self):
         super(Discriminator, self).__init__()
 
         self.input_layer = nn.Conv2d(1, 128, kernel_size=(3, 3), stride=(1, 2), padding=(1, 1))
@@ -175,38 +180,50 @@ class Discriminator(nn.Module):
 
         self.down_sample_1 = Downsample2d(128, 256, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
         self.down_sample_2 = Downsample2d(256, 512, kernel=(3, 3), stride=(2, 2), padding=(1, 1))
-        self.down_sample_3 = Downsample2d(512, 1024, kernel=(6, 3), stride=(1, 2), padding=(0, 1))
+        self.down_sample_3 = Downsample2d(512, 1024, kernel=(3, 3), stride=(1, 2), padding=(1, 1))
 
-        self.fc = nn.Linear(1024 * 1 * 8, 2)
-        self.lsgan = lsgan
+        self.fc = nn.Linear(1024 * 6 * 8, 6 * 8)
+
     def forward(self, x):
         batch = x.size(0)
+        #print(x.size())
         A = self.input_layer(x)
         B = self.input_layer_gates(x)
         H = A * F.sigmoid(B)
+        #print(H.size())
         H = self.down_sample_1(H)
+        #print(H.size())
         H = self.down_sample_2(H)
+        #print(H.size())
         H = self.down_sample_3(H)
+        #print(H.size())
         H = H.view(batch, -1)
         out = self.fc(H)
-        if not self.lsgan: # If use LSGAN, no sigmoid to avoid vanishing gradient
-            out = F.sigmoid(out)
+        #print(out.size())
+
+        #out = F.sigmoid(out)
         return out
 
 
 
 class CycleGAN(nn.Module):
-    def __init__(self, lsgan=False):
+    def __init__(self, cuda=False):
         super(CycleGAN, self).__init__()
 
         self.G_x2y = Generator()
         self.G_y2x = Generator()
 
-        self.D_x = Discriminator(lsgan=lsgan)
-        self.D_y = Discriminator(lsgan=lsgan)
+        self.D_x = Discriminator()
+        self.D_y = Discriminator()
 
         self.G_params = chain(self.G_x2y.parameters(), self.G_y2x.parameters())
         self.D_params = chain(self.D_x.parameters(), self.D_y.parameters())
+
+        self.fake_x_buffer = ReplayBuffer()
+        self.fake_y_buffer = ReplayBuffer()
+
+        self.CUDA = cuda
+        self.set_parm_()
 
     def forward(self, x, y):
         fake_y = self.G_x2y(x)
@@ -218,27 +235,102 @@ class CycleGAN(nn.Module):
         y_id = self.G_x2y(y)
         x_id = self.G_y2x(x)
 
+        # Buffer operation(save fake to buffer and randomly select them)
+        # fake_x_ = self.fake_x_buffer.push_and_pop(fake_x)
+        # fake_y_ = self.fake_y_buffer.push_and_pop(fake_y)
+
         # trans x y to 2d
-        fake_x = fake_x.unsqueeze(1)
-        fake_y = fake_y.unsqueeze(1)
+        fake_x_ = fake_x.unsqueeze(1)
+        fake_y_ = fake_y.unsqueeze(1)
         x = x.unsqueeze(1)
         y = y.unsqueeze(1)
-        d_fake_x = self.D_x(fake_x)
-        d_fake_y = self.D_x(fake_y)
+        d_fake_x = self.D_x(fake_x_)
+        d_fake_y = self.D_x(fake_y_)
 
         d_real_x = self.D_x(x)
         d_real_y = self.D_y(y)
 
         return fake_x,fake_y, cycle_x, cycle_y, x_id, y_id, d_fake_x, d_fake_y, d_real_x, d_real_y
 
-    def train_D(self):
-        for p in self.D_params:
-            p.requires_grad = True
+    def set_parm_(self):
+        self.sampling_rate = 16000
+        self.frame_period = 5.0
+        self.num_mcep = 24
+        data_logf0 = np.load('model/sf1_tf2/logf0s_normalization.npz')
+        data_mcep = np.load('model/sf1_tf2/mcep_normalization.npz')
+        self.log_f0s_mean_A = data_logf0['mean_A']
+        self.log_f0s_std_A = data_logf0['std_A']
+        self.log_f0s_mean_B = data_logf0['mean_B']
+        self.log_f0s_std_B = data_logf0['std_B']
 
-    def train_G(self):
-        for p in self.D_params:
-            p.requires_grad = False
+        self.coded_sps_A_mean = data_mcep['mean_A']
+        self.coded_sps_A_std = data_mcep['std_A']
+        self.coded_sps_B_mean = data_mcep['mean_B']
+        self.coded_sps_B_std = data_mcep['std_B']
+        self.validation_A_dir = 'evaluation_all/SF1'
+        self.validation_B_dir = 'evaluation_all/TF2'
+        self.validation_A_output_dir = 'validation_output/converted_A'
+        self.validation_B_output_dir = 'validation_output/converted_B'
 
+    def trans_audio(self):
+
+        self.G_x2y.eval()
+        self.G_y2x.eval()
+
+        for file in os.listdir(self.validation_A_dir):
+            filepath = os.path.join(self.validation_A_dir, file)
+            wav, _ = librosa.load(filepath, sr=self.sampling_rate, mono=True)
+            wav = wav_padding(wav=wav, sr=self.sampling_rate, frame_period=self.frame_period, multiple=4)
+            f0, timeaxis, sp, ap = world_decompose(wav=wav, fs=self.sampling_rate, frame_period=self.frame_period)
+            f0_converted = pitch_conversion(f0=f0, mean_log_src=self.log_f0s_mean_A, std_log_src=self.log_f0s_std_A,
+                                            mean_log_target=self.log_f0s_mean_B, std_log_target=self.log_f0s_std_B)
+            coded_sp = world_encode_spectral_envelop(sp=sp, fs=self.sampling_rate, dim=self.num_mcep)
+            coded_sp_transposed = coded_sp.T
+            coded_sp_norm = (coded_sp_transposed - self.coded_sps_A_mean) / self.coded_sps_A_std
+            x = torch.Tensor(np.array([coded_sp_norm]))
+            x = x.cuda() if self.CUDA else x
+            coded_sp_converted_norm = self.G_x2y(x)
+            if self.CUDA:
+                coded_sp_converted_norm = coded_sp_converted_norm.cpu()
+            coded_sp_converted_norm = coded_sp_converted_norm.detach().numpy()
+            coded_sp_converted = coded_sp_converted_norm * self.coded_sps_B_std + self.coded_sps_B_mean
+            coded_sp_converted = coded_sp_converted.reshape(self.num_mcep, -1)
+            coded_sp_converted = coded_sp_converted.T
+            coded_sp_converted = np.ascontiguousarray(coded_sp_converted)
+            decoded_sp_converted = world_decode_spectral_envelop(coded_sp=coded_sp_converted, fs=self.sampling_rate)
+            wav_transformed = world_speech_synthesis(f0=f0_converted, decoded_sp=decoded_sp_converted, ap=ap,
+                                                     fs=self.sampling_rate,
+                                                     frame_period=self.frame_period)
+            librosa.output.write_wav(os.path.join(self.validation_A_output_dir, os.path.basename(file)), wav_transformed,
+                                     self.sampling_rate)
+
+        for file in os.listdir(self.validation_B_dir):
+            filepath = os.path.join(self.validation_B_dir, file)
+            wav, _ = librosa.load(filepath, sr=self.sampling_rate, mono=True)
+            wav = wav_padding(wav=wav, sr=self.sampling_rate, frame_period=self.frame_period, multiple=4)
+            f0, timeaxis, sp, ap = world_decompose(wav=wav, fs=self.sampling_rate, frame_period=self.frame_period)
+            f0_converted = pitch_conversion(f0=f0, mean_log_src=self.log_f0s_mean_B, std_log_src=self.log_f0s_std_B,
+                                            mean_log_target=self.log_f0s_mean_A, std_log_target=self.log_f0s_std_A)
+            coded_sp = world_encode_spectral_envelop(sp=sp, fs=self.sampling_rate, dim=self.num_mcep)
+            coded_sp_transposed = coded_sp.T
+            coded_sp_norm = (coded_sp_transposed - self.coded_sps_B_mean) / self.coded_sps_B_std
+            y = torch.Tensor(np.array([coded_sp_norm]))
+            y = y.cuda() if self.CUDA else y
+            coded_sp_converted_norm = self.G_y2x(y)
+            if self.CUDA:
+                coded_sp_converted_norm = coded_sp_converted_norm.cpu()
+            coded_sp_converted_norm = coded_sp_converted_norm.detach().numpy()
+            coded_sp_converted = coded_sp_converted_norm * self.coded_sps_A_std + self.coded_sps_A_mean
+            coded_sp_converted = coded_sp_converted.reshape(self.num_mcep, -1)
+            coded_sp_converted = coded_sp_converted.T
+            coded_sp_converted = np.ascontiguousarray(coded_sp_converted)
+            decoded_sp_converted = world_decode_spectral_envelop(coded_sp=coded_sp_converted, fs=self.sampling_rate)
+            wav_transformed = world_speech_synthesis(f0=f0_converted, decoded_sp=decoded_sp_converted, ap=ap,
+                                                     fs=self.sampling_rate, frame_period=self.frame_period)
+            librosa.output.write_wav(os.path.join(self.validation_B_output_dir, os.path.basename(file)), wav_transformed,
+                                     self.sampling_rate)
+        self.G_x2y.train()
+        self.G_y2x.train()
 
 
 
